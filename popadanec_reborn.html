@@ -293,6 +293,21 @@ b{font-weight:800}
 .rinfo .rh b{font-family:var(--serif);font-size:15px;letter-spacing:.06em;color:var(--gold2)}
 .rinfo .rl{font-size:11.5px;color:var(--txt);margin:2px 0;line-height:1.35}
 .rinfo .btn{margin-top:8px;width:100%}
+
+.admbody{padding:10px 12px 14px}
+.admgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px}
+.admcard{display:flex;flex-direction:column;gap:5px;padding:9px}
+.admcard .nm{font-family:var(--serif);font-size:12.5px;letter-spacing:.04em}
+.admcard .btn{align-self:flex-start}
+.admrar{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:9px}
+.admlist{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:6px}
+.admitem{display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:linear-gradient(180deg,#1f1632,#150e22);color:var(--txt);cursor:pointer}
+.admitem:active{border-color:var(--gold2)}
+.admitem .ic{display:block;width:40px;height:40px}
+.admitem .nm{font-size:12px;font-weight:700}
+.admset{grid-column:1/-1;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:#150e22}
+.admset .nm{font-family:var(--serif);font-size:13px;letter-spacing:.05em;margin-bottom:5px}
+.admbtns{display:flex;flex-wrap:wrap;gap:5px}
 </style>
 </head>
 <body>
@@ -1787,6 +1802,7 @@ function doAttackHit(a) {
 }
 function hurtMob(m, dmg, o) {
   o = o || {};
+  if (G.flags && G.flags.onehit && o !== undefined) dmg = Math.max(dmg, m.maxhp * 2);
   const s = heroStats();
   const def = (m.def || 0) + (m.armor ? m.armor * 60 : 0);
   const pen = s.armorPen || 0;
@@ -1843,6 +1859,7 @@ function killMob(m) {
 /* ---------------- player damage ---------------- */
 function hurtPlayer(amount, src, opt) {
   if (P.dead || P.invuln > 0 || P.iframe > 0) return;
+  if (G.flags && G.flags.god) { DMG.push({ x: P.x, y: P.y - 26, v: 'GOD', l: .7, c: '#7affc8' }); return; }
   const s = heroStats();
   // dodge talent
   if (s.dodge && Math.random() < s.dodge) { DMG.push({ x: P.x, y: P.y - 26, v: 'промах', l: 1, c: '#a8d8ff' }); return; }
@@ -2639,6 +2656,280 @@ function weaponSprite(it) {
 }
 function initSprites() { buildRegionTiles(); }
 
+/* ===== 46_character.js ===== */
+/* ================= CHARACTER v2: armor layers on body + weapons held in hand with poses ================= */
+/* Hero is drawn into a 24x28 pixel cell (scaled by CH_SC). All coordinates below are in that grid. */
+const CH_W = 24, CH_H = 28, CH_SC = 2.1;
+const HAND = { // right-hand grip position (cell coords) by facing; weapon pivots here
+  down: { x: 5, y: 17 }, up: { x: 19, y: 17 }, side: { x: 15, y: 16 }
+};
+const SET_STYLE = { // armor silhouette per region set: helm shape, chest shape, legs shape, trim, glow
+  forest: { helm: 'crown', chest: 'bark', legs: 'wrap', main: '#5d8a4e', trim: '#b8e090', dark: '#2c4a28' },
+  mine: { helm: 'lamp', chest: 'apron', legs: 'boots', main: '#8a6a44', trim: '#e0a850', dark: '#4a3622' },
+  flooded: { helm: 'crown', chest: 'scale', legs: 'fin', main: '#3f8aa6', trim: '#a8ecff', dark: '#1e4a5e' },
+  crystal: { helm: 'shard', chest: 'facet', legs: 'shardleg', main: '#7a5cc0', trim: '#f0c8ff', dark: '#3a2a68' },
+  graveyard: { helm: 'hood', chest: 'ribs', legs: 'wrap', main: '#7a8088', trim: '#e8e0c8', dark: '#363c44' },
+  goblin: { helm: 'pot', chest: 'coins', legs: 'boots', main: '#a88a48', trim: '#ffd96b', dark: '#5a4620' },
+  desert: { helm: 'turban', chest: 'sash', legs: 'wrap', main: '#c8a460', trim: '#fff0b8', dark: '#6a5230' },
+  fortress: { helm: 'great', chest: 'plate', legs: 'greaves', main: '#8a8e9e', trim: '#ffb48a', dark: '#3e414e' },
+  ice: { helm: 'horn', chest: 'frost', legs: 'greaves', main: '#8ac0e0', trim: '#ffffff', dark: '#3a6080' },
+  volcano: { helm: 'horn', chest: 'plate', legs: 'greaves', main: '#a84a30', trim: '#ff9a3a', dark: '#3a140e' },
+  sky: { helm: 'wing', chest: 'feather', legs: 'wrap', main: '#a8c4e8', trim: '#ffffff', dark: '#52688c' },
+  void: { helm: 'hood', chest: 'rift', legs: 'shardleg', main: '#6a46a8', trim: '#d8a0ff', dark: '#1e1238' }
+};
+const RAR_TRIM = { common: null, uncommon: '#7ddc9a', rare: '#7fc4ff', epic: '#b884ff', legend: '#ffb347', mythic: '#ff5d7a' };
+function rc(g, x, y, w, h, c) { g.fillStyle = c; g.fillRect(x, y, w, h); }
+function armorOf(slot) { const it = G.gear[slot]; if (!it) return null; const st = SET_STYLE[it.setId] || SET_STYLE.fortress; return { it, st, rt: RAR_TRIM[it.rarity] }; }
+/* ---- individual armor pieces. dir: 'down'|'up'|'side'. b = bob offset, w = walk phase 0..3 ---- */
+function drawHelm(g, A, dir, b) {
+  const { st, rt } = A, m = st.main, d = st.dark, t = st.trim, hi = lite(m, .3);
+  const y0 = 1 + b; // head top
+  if (dir === 'up') { rc(g, 7, y0, 10, 8, d); rc(g, 8, y0 + 1, 8, 6, m); } // back of helm covers hair
+  const face = dir !== 'up';
+  switch (st.helm) {
+    case 'great': rc(g, 6, y0, 12, 9, m); rc(g, 6, y0, 12, 2, hi); rc(g, 6, y0 + 8, 12, 1, d); if (face) { rc(g, 8, y0 + 4, 8, 2, '#0a0610'); rc(g, 11, y0 + 3, 2, 5, d); } rc(g, 11, y0 - 3, 2, 3, t); rc(g, 10, y0 - 1, 4, 1, t); break;
+    case 'horn': rc(g, 7, y0, 10, 7, m); rc(g, 7, y0, 10, 2, hi); rc(g, 7, y0 + 6, 10, 1, d); if (face) rc(g, 9, y0 + 4, 6, 1, '#0a0610'); rc(g, 5, y0 - 3, 2, 5, t); rc(g, 4, y0 - 5, 2, 3, t); rc(g, 17, y0 - 3, 2, 5, t); rc(g, 18, y0 - 5, 2, 3, t); break;
+    case 'crown': rc(g, 7, y0, 10, 3, m); rc(g, 7, y0, 10, 1, hi); for (let i = 0; i < 4; i++) rc(g, 7 + i * 3, y0 - 3 - (i % 2), 2, 4 + (i % 2), t); rc(g, 7, y0 + 2, 10, 1, d); break;
+    case 'lamp': rc(g, 7, y0, 10, 4, m); rc(g, 7, y0, 10, 1, hi); rc(g, 6, y0 + 3, 12, 1, d); rc(g, 10, y0 - 2, 4, 3, '#ffe9a8'); rc(g, 11, y0 - 3, 2, 1, '#fff'); break;
+    case 'pot': rc(g, 7, y0, 10, 6, m); rc(g, 7, y0, 10, 2, hi); rc(g, 6, y0 + 5, 12, 1, d); rc(g, 11, y0 - 2, 2, 2, t); rc(g, 9, y0 + 3, 2, 2, t); break;
+    case 'shard': rc(g, 7, y0 + 1, 10, 3, m); for (let i = 0; i < 3; i++) { rc(g, 8 + i * 3, y0 - 4 + (i === 1 ? -2 : 0), 2, 6 + (i === 1 ? 2 : 0), t); rc(g, 9 + i * 3, y0 - 3 + (i === 1 ? -2 : 0), 1, 3, '#fff'); } break;
+    case 'hood': rc(g, 6, y0 - 1, 12, 9, d); rc(g, 7, y0, 10, 7, m); rc(g, 6, y0 + 7, 12, 3, d); if (face) { rc(g, 8, y0 + 3, 8, 4, '#120a1c'); rc(g, 9, y0 + 4, 2, 1, t); rc(g, 13, y0 + 4, 2, 1, t); } break;
+    case 'turban': rc(g, 6, y0 - 1, 12, 7, m); rc(g, 6, y0 - 1, 12, 2, hi); rc(g, 7, y0 + 2, 10, 1, t); rc(g, 9, y0 + 3, 6, 1, d); rc(g, 11, y0 - 3, 2, 2, t); break;
+    case 'wing': rc(g, 7, y0, 10, 3, m); rc(g, 7, y0, 10, 1, hi); rc(g, 3, y0 - 1, 4, 2, t); rc(g, 2, y0 - 3, 3, 2, t); rc(g, 17, y0 - 1, 4, 2, t); rc(g, 19, y0 - 3, 3, 2, t); break;
+    default: rc(g, 7, y0, 10, 4, m);
+  }
+  if (rt) { rc(g, 7, y0 + (st.helm === 'crown' ? 3 : 1), 10, 1, rt); }
+}
+function drawChest(g, A, dir, b) {
+  const { st, rt } = A, m = st.main, d = st.dark, t = st.trim, hi = lite(m, .28), lo = shade(m, .7);
+  const y0 = 9 + b; // torso top (shoulders)
+  // base cuirass
+  rc(g, 6, y0, 12, 9, m); rc(g, 6, y0, 12, 2, hi); rc(g, 6, y0, 2, 9, hi); rc(g, 16, y0, 2, 9, lo); rc(g, 6, y0 + 8, 12, 1, d);
+  // shoulder guards
+  const pad = (x) => { rc(g, x, y0 - 1, 4, 4, m); rc(g, x, y0 - 1, 4, 1, hi); rc(g, x, y0 + 2, 4, 1, d); };
+  if (dir !== 'side') { pad(3); pad(17); } else { pad(8); }
+  const face = dir !== 'up';
+  const bk = !face;
+  switch (st.chest) {
+    case 'plate': if (face) { rc(g, 11, y0 + 1, 2, 7, hi); rc(g, 7, y0 + 4, 10, 1, d); rc(g, 8, y0 + 2, 3, 2, t); rc(g, 13, y0 + 2, 3, 2, t); } else { rc(g, 8, y0 + 2, 8, 5, lo); } break;
+    case 'bark': for (let i = 0; i < 4; i++) rc(g, 7 + i * 3, y0 + 1, 1, 7, d); rc(g, 8, y0 + 3, 3, 1, t); rc(g, 13, y0 + 5, 3, 1, t); break;
+    case 'apron': rc(g, 8, y0 + 3, 8, 6, '#9a8468'); rc(g, 8, y0 + 3, 8, 1, '#c0a888'); rc(g, 11, y0 + 5, 2, 2, t); break;
+    case 'scale': for (let j = 0; j < 4; j++) for (let i = 0; i < 4; i++) rc(g, 7 + i * 3 + (j % 2), y0 + 1 + j * 2, 2, 1, (i + j) % 2 ? t : hi); break;
+    case 'facet': rc(g, 9, y0 + 2, 6, 5, t); rc(g, 10, y0 + 3, 4, 3, hi); rc(g, 11, y0 + 4, 2, 1, '#fff'); break;
+    case 'ribs': for (let i = 0; i < 4; i++) rc(g, 8, y0 + 1 + i * 2, 8, 1, t); rc(g, 11, y0, 2, 9, t); break;
+    case 'coins': for (let i = 0; i < 6; i++) rc(g, 7 + (i % 3) * 3, y0 + 2 + Math.floor(i / 3) * 3, 2, 2, t); break;
+    case 'sash': rc(g, 6, y0 + 2, 12, 2, t); rc(g, 13, y0 + 3, 3, 6, t); rc(g, 6, y0 + 7, 12, 1, t); break;
+    case 'frost': rc(g, 8, y0 + 2, 8, 1, t); rc(g, 10, y0 + 4, 4, 1, t); for (let i = 0; i < 3; i++) rc(g, 7 + i * 4, y0 + 6, 1, 2, t); break;
+    case 'feather': for (let i = 0; i < 3; i++) { rc(g, 7 + i * 3, y0 + 2 + i, 3, 5 - i, t); } break;
+    case 'rift': rc(g, 8, y0 + 1, 1, 7, t); rc(g, 9, y0 + 3, 4, 1, t); rc(g, 12, y0 + 5, 4, 1, t); rc(g, 15, y0 + 2, 1, 4, t); break;
+  }
+  // belt
+  rc(g, 6, y0 + 8, 12, 1, '#2a1c14'); if (face) rc(g, 11, y0 + 8, 2, 1, rt || '#e8c073');
+  if (rt) { rc(g, 6, y0, 12, 1, rt); }
+}
+function drawLegs(g, A, dir, b, w) {
+  const { st, rt } = A, m = st.main, d = st.dark, t = st.trim, hi = lite(m, .25);
+  const L = (w === 0 ? 1 : w === 2 ? -1 : 0), R = -L, y0 = 18 + b;
+  const leg = (x, off) => {
+    rc(g, x, y0, 4, 6 + off, m); rc(g, x, y0, 1, 6 + off, hi); rc(g, x + 3, y0, 1, 6 + off, d);
+    rc(g, x, y0 + 2, 4, 1, d);
+    const by = y0 + 5 + off;
+    switch (st.legs) {
+      case 'greaves': rc(g, x - 1, by - 3, 6, 4, m); rc(g, x - 1, by - 3, 6, 1, t); rc(g, x - 1, by + 1, 6, 2, d); break;
+      case 'boots': rc(g, x - 1, by - 1, 6, 3, '#4a3622'); rc(g, x - 1, by - 1, 6, 1, t); break;
+      case 'fin': rc(g, x - 1, by, 6, 2, d); rc(g, x - 2, by - 2, 2, 3, t); break;
+      case 'shardleg': rc(g, x - 1, by - 2, 6, 3, d); rc(g, x, by - 4, 1, 3, t); rc(g, x + 3, by - 3, 1, 3, t); break;
+      default: rc(g, x - 1, by - 1, 6, 3, d); rc(g, x, by - 2, 4, 1, t);
+    }
+    if (rt) rc(g, x, y0, 4, 1, rt);
+  };
+  if (dir === 'side') { leg(9, L); leg(11, R); } else { leg(7, L); leg(13, R); }
+}
+/* ---- bare body (no armor): skin, hair, simple tunic ---- */
+function drawBody(g, dir, b, w, gear) {
+  const skin = '#f0c8a0', skinLo = '#c89874', hair = '#3a2418', tun = '#5a4a8a', tunLo = '#3e3262', pant = '#3a3050', boot = '#2a1c14';
+  const L = (w === 0 ? 1 : w === 2 ? -1 : 0), R = -L;
+  const sw = L; // arm swing
+  const y0 = 9 + b;
+  // legs (bare)
+  const lg = (x, off) => { rc(g, x, 18 + b, 4, 6 + off, pant); rc(g, x - 1, 22 + b + off, 6, 3, boot); };
+  if (dir === 'side') { lg(9, L); lg(11, R); } else { lg(7, L); lg(13, R); }
+  // torso
+  rc(g, 6, y0, 12, 9, tun); rc(g, 6, y0, 2, 9, lite(tun, .2)); rc(g, 16, y0, 2, 9, tunLo); rc(g, 6, y0 + 8, 12, 1, '#2a1c14');
+  // head
+  const hy = 1 + b;
+  if (dir === 'up') { rc(g, 7, hy, 10, 8, hair); rc(g, 8, hy + 7, 8, 2, skinLo); }
+  else if (dir === 'down') {
+    rc(g, 7, hy, 10, 8, skin); rc(g, 7, hy + 7, 10, 1, skinLo); rc(g, 6, hy - 1, 12, 4, hair); rc(g, 6, hy + 2, 2, 4, hair); rc(g, 16, hy + 2, 2, 4, hair);
+    rc(g, 8, hy + 4, 3, 2, '#fff'); rc(g, 13, hy + 4, 3, 2, '#fff'); rc(g, 9, hy + 5, 1, 1, '#1a1020'); rc(g, 14, hy + 5, 1, 1, '#1a1020'); rc(g, 11, hy + 7, 2, 1, '#a86a58');
+  } else {
+    rc(g, 7, hy, 10, 8, skin); rc(g, 7, hy + 7, 10, 1, skinLo); rc(g, 6, hy - 1, 11, 4, hair); rc(g, 6, hy + 2, 4, 5, hair);
+    rc(g, 13, hy + 4, 3, 2, '#fff'); rc(g, 14, hy + 5, 1, 1, '#1a1020'); rc(g, 17, hy + 5, 1, 2, skinLo);
+  }
+}
+/* ---- arms: sleeve + hand. Off-hand always visible; weapon hand drawn separately so the grip sits on the hilt ---- */
+function drawArm(g, x, y, len, sleeve, hand, shade2) {
+  rc(g, x, y, 4, len, sleeve); rc(g, x, y, 1, len, lite(sleeve, .2)); rc(g, x + 3, y, 1, len, shade(sleeve, .6));
+  rc(g, x, y + len, 4, 3, hand); rc(g, x, y + len + 2, 4, 1, shade2);
+}
+/* ---------- weapons: unique silhouette per class, tinted by item; drawn in a 40x40 cell, hilt at (20,34) pointing UP ---------- */
+const WP_CACHE = {};
+function weaponArt(it) {
+  const key = (it.base || 'x') + '|' + it.cls + '|' + it.rarity + '|' + (it.up || 0);
+  if (WP_CACHE[key]) return WP_CACHE[key];
+  const [c, g] = mkc(40, 44);
+  const tier = (WB[it.base] || LEGEND[it.base] || {}).tier || 1;
+  const reg = (WB[it.base] || LEGEND[it.base] || {}).reg || 'forest';
+  const st = SET_STYLE[reg] || SET_STYLE.fortress;
+  const seed = hh(it.base ? it.base.length * 31 + it.base.charCodeAt(it.base.length - 1) : 7, tier, 3);
+  const steel = RAR_TRIM[it.rarity] ? mix('#c8ccd8', RAR_TRIM[it.rarity], .22) : '#c8ccd8', steelHi = lite(steel, .5), steelLo = shade(steel, .6);
+  const wood = '#6a4a2a', woodHi = '#8a6a3a', woodLo = '#3e2a16', gold = '#e8c073', gem = st.trim;
+  const cx = 20;
+  const grip = (y0, h) => { rc(g, cx - 1, y0, 3, h, '#3a2418'); for (let i = 0; i < h; i += 2) rc(g, cx - 1, y0 + i, 3, 1, '#5a3a22'); };
+  switch (it.cls) {
+    case 'sword': {
+      const len = 20 + (seed % 5), wd = 3 + (tier > 5 ? 1 : 0);
+      rc(g, cx - 1, 34 - len, wd, len, steel); rc(g, cx - 1, 34 - len, 1, len, steelHi); rc(g, cx + wd - 2, 34 - len, 1, len, steelLo); rc(g, cx, 34 - len, 1, len, lite(steel, .2));
+      rc(g, cx - 1, 33 - len, wd, 1, steelHi); rc(g, cx, 32 - len, wd - 2, 1, steelHi);
+      const gw = 9 + (seed % 3) * 2; rc(g, cx - (gw >> 1), 34, gw, 2, gold); rc(g, cx - (gw >> 1), 34, gw, 1, lite(gold, .4)); rc(g, cx - (gw >> 1), 33, 2, 2, gold); rc(g, cx + (gw >> 1) - 2, 33, 2, 2, gold);
+      grip(36, 5); rc(g, cx - 2, 41, 5, 3, gold); rc(g, cx - 1, 42, 3, 1, gem);
+      if (seed % 2) { rc(g, cx, 34 - len + 4, 1, len - 8, shade(steel, .75)); } // fuller
+      rc(g, cx, 32, 1, 2, gem);
+      break; }
+    case 'axe': {
+      rc(g, cx - 1, 8, 3, 36, wood); rc(g, cx - 1, 8, 1, 36, woodHi); rc(g, cx + 1, 8, 1, 36, woodLo);
+      for (let i = 0; i < 4; i++) rc(g, cx - 1, 30 + i * 3, 3, 1, woodLo);
+      const hw = 12 + (seed % 3);
+      g.fillStyle = steel; g.beginPath(); g.moveTo(cx + 1, 6); g.lineTo(cx + hw, 2); g.lineTo(cx + hw + 2, 12); g.lineTo(cx + hw - 1, 22); g.lineTo(cx + 1, 18); g.closePath(); g.fill();
+      g.fillStyle = steelHi; g.beginPath(); g.moveTo(cx + hw, 2); g.lineTo(cx + hw + 2, 12); g.lineTo(cx + hw - 1, 22); g.lineTo(cx + hw - 2, 12); g.closePath(); g.fill();
+      g.fillStyle = steelLo; g.fillRect(cx + 1, 16, hw - 3, 2);
+      rc(g, cx - 2, 6, 5, 3, gold); rc(g, cx - 2, 17, 5, 3, gold); rc(g, cx - 2, 42, 5, 2, gold);
+      if (seed % 2) { g.fillStyle = steel; g.beginPath(); g.moveTo(cx - 1, 6); g.lineTo(cx - hw + 3, 4); g.lineTo(cx - hw + 2, 16); g.lineTo(cx - 1, 18); g.closePath(); g.fill(); }
+      break; }
+    case 'spear': {
+      rc(g, cx - 1, 10, 3, 34, wood); rc(g, cx - 1, 10, 1, 34, woodHi); rc(g, cx + 1, 10, 1, 34, woodLo);
+      g.fillStyle = steel; g.beginPath(); g.moveTo(cx, 0); g.lineTo(cx + 4, 8); g.lineTo(cx + 3, 13); g.lineTo(cx - 2, 13); g.lineTo(cx - 3, 8); g.closePath(); g.fill();
+      g.fillStyle = steelHi; g.beginPath(); g.moveTo(cx, 0); g.lineTo(cx - 3, 8); g.lineTo(cx - 2, 13); g.lineTo(cx, 12); g.closePath(); g.fill();
+      rc(g, cx - 3, 13, 7, 2, gold); rc(g, cx - 2, 15, 5, 1, st.dark); rc(g, cx - 1, 16, 3, 3, st.main); rc(g, cx - 1, 40, 3, 3, gold);
+      if (seed % 2) { rc(g, cx - 5, 12, 2, 5, steel); rc(g, cx + 4, 12, 2, 5, steel); }
+      break; }
+    case 'dagger': {
+      const len = 12 + (seed % 3);
+      g.fillStyle = steel; g.beginPath(); g.moveTo(cx, 34 - len - 3); g.lineTo(cx + 3, 34 - len + 3); g.lineTo(cx + 2, 33); g.lineTo(cx - 2, 33); g.lineTo(cx - 3, 34 - len + 3); g.closePath(); g.fill();
+      g.fillStyle = steelHi; g.beginPath(); g.moveTo(cx, 34 - len - 3); g.lineTo(cx - 3, 34 - len + 3); g.lineTo(cx - 2, 33); g.lineTo(cx, 33); g.closePath(); g.fill();
+      rc(g, cx - 5, 33, 11, 2, gold); rc(g, cx - 5, 32, 2, 2, gold); rc(g, cx + 4, 32, 2, 2, gold);
+      rc(g, cx - 1, 35, 3, 6, '#2a1830'); for (let i = 0; i < 6; i += 2) rc(g, cx - 1, 35 + i, 3, 1, st.main);
+      rc(g, cx - 2, 41, 5, 3, gold); rc(g, cx - 1, 42, 3, 1, gem);
+      break; }
+    case 'staff': {
+      rc(g, cx - 1, 8, 3, 36, '#5a3a22'); rc(g, cx - 1, 8, 1, 36, '#7a5232'); rc(g, cx + 1, 8, 1, 36, '#2e1c0e');
+      for (let i = 0; i < 5; i++) rc(g, cx - 2, 14 + i * 6, 5, 1, gold);
+      // head: claw + orb
+      rc(g, cx - 5, 6, 3, 3, gold); rc(g, cx - 6, 2, 2, 6, gold); rc(g, cx + 3, 6, 3, 3, gold); rc(g, cx + 5, 2, 2, 6, gold);
+      g.fillStyle = gem; g.beginPath(); g.arc(cx, 4, 5, 0, TAU); g.fill();
+      g.fillStyle = lite(gem, .55); g.beginPath(); g.arc(cx - 1.5, 2.5, 2, 0, TAU); g.fill();
+      g.fillStyle = '#fff'; g.fillRect(cx - 2, 1, 1, 1);
+      break; }
+    case 'great': {
+      const len = 26 + (seed % 5), wd = 6;
+      rc(g, cx - 3, 34 - len, wd, len, steel); rc(g, cx - 3, 34 - len, 2, len, steelHi); rc(g, cx + 2, 34 - len, 1, len, steelLo); rc(g, cx - 1, 34 - len + 3, 2, len - 8, shade(steel, .72));
+      g.fillStyle = steel; g.beginPath(); g.moveTo(cx - 3, 34 - len); g.lineTo(cx, 34 - len - 5); g.lineTo(cx + 3, 34 - len); g.closePath(); g.fill();
+      g.fillStyle = steelHi; g.beginPath(); g.moveTo(cx - 3, 34 - len); g.lineTo(cx, 34 - len - 5); g.lineTo(cx, 34 - len); g.closePath(); g.fill();
+      rc(g, cx - 8, 34, 17, 3, gold); rc(g, cx - 8, 34, 17, 1, lite(gold, .4)); rc(g, cx - 9, 32, 3, 5, gold); rc(g, cx + 7, 32, 3, 5, gold);
+      grip(37, 5); rc(g, cx - 3, 41, 7, 3, gold); rc(g, cx - 1, 42, 3, 1, gem);
+      rc(g, cx - 1, 31, 3, 3, gem);
+      break; }
+  }
+  // enchant/upgrade glow tint at the tip handled at draw time
+  WP_CACHE[key] = c; return c;
+}
+function weaponRarGlow(it) { return RAR_TRIM[it.rarity] || null; }
+/* ---------- poses: returns {ax, ay (grip anchor offset from hero origin), ang (blade direction, radians, 0 = right), sc, flip} ---------- */
+function weaponPose(face, atkK, cls, blocking, charging, t) {
+  const m = (face === 'left') ? -1 : 1; // facing sign
+  const brth = Math.sin(t * 2.2) * .04;
+  const reachMul = cls === 'spear' ? 1 : cls === 'great' ? 1.15 : cls === 'dagger' ? .8 : 1;
+  if (atkK >= 0) {
+    const k = atkK;
+    if (cls === 'spear' || cls === 'dagger') { // thrust
+      const th = k < .3 ? -easeO(k / .3) * 5 : (k < .6 ? -5 + easeO((k - .3) / .3) * 24 : 19 * (1 - (k - .6) / .4));
+      return { dx: m * (2 + th), dy: -2 + th * 0.0, ang: face === 'up' ? -Math.PI / 2 : face === 'down' ? Math.PI / 2 : (m > 0 ? 0 : Math.PI), sc: 1, thrust: true };
+    }
+    const base = face === 'up' ? -Math.PI / 2 : face === 'down' ? Math.PI / 2 : (m > 0 ? 0 : Math.PI);
+    let a;
+    if (k < .3) a = base - m * (.35 + easeO(k / .3) * 1.25);           // wind-up overhead/behind
+    else if (k < .62) a = base - m * 1.6 + m * easeI((k - .3) / .32) * 3.1; // cut through
+    else a = base + m * 1.5 - m * easeO((k - .62) / .38) * 1.4;       // follow-through
+    const lift = k < .3 ? -easeO(k / .3) * 4 : k < .62 ? -4 + easeI((k - .3) / .32) * 7 : 3 - easeO((k - .62) / .38) * 3;
+    return { dx: m * 2, dy: lift, ang: a, sc: cls === 'great' || cls === 'axe' ? 1.04 : 1 };
+  }
+  if (blocking) return { dx: m * 4, dy: -4, ang: (face === 'up' ? -Math.PI / 2 : face === 'down' ? Math.PI / 2 : m > 0 ? -.2 : Math.PI + .2) + m * (-1.1), sc: 1 };
+  if (charging) return { dx: -m * 3, dy: -6, ang: (m > 0 ? Math.PI : 0) - m * 1.0 + Math.sin(t * 16) * .03, sc: 1 };
+  // idle ready stance: blade up-forward, held with the hand
+  if (face === 'up') return { dx: -3, dy: -2, ang: -Math.PI / 2 - .5 + brth, sc: 1 };
+  if (face === 'down') return { dx: 4, dy: -2, ang: -Math.PI / 2 + .35 + brth, sc: 1 };
+  return { dx: m * 3, dy: 0, ang: m > 0 ? -.85 + brth : Math.PI + .85 - brth, sc: 1 };
+}
+function easeO(t) { return 1 - Math.pow(1 - t, 3); }
+function easeI(t) { return t * t * t; }
+/* ---------- compose: hero frame cached by (gear signature, dir, walk phase, bob) ---------- */
+const HERO_CACHE = {};
+function gearSig() { return ['head', 'chest', 'legs'].map(s => { const a = G.gear[s]; return a ? a.setId + a.rarity : '-'; }).join('|'); }
+function heroCell(dir, w, b) {
+  const key = gearSig() + '#' + dir + w + '_' + b;
+  if (HERO_CACHE[key]) return HERO_CACHE[key];
+  const [c, g] = mkc(CH_W, CH_H);
+  const A = { head: armorOf('head'), chest: armorOf('chest'), legs: armorOf('legs') };
+  drawBody(g, dir, b, w, A);
+  if (A.legs) drawLegs(g, A.legs, dir, b, w);
+  if (A.chest) drawChest(g, A.chest, dir, b);
+  if (A.head) drawHelm(g, A.head, dir, b);
+  // arms on top of torso: sleeve from chest armor or tunic, visible hand
+  const sleeve = A.chest ? A.chest.st.main : '#6e5aa8', sleeveLo = A.chest ? A.chest.st.dark : '#3e3262', hand = '#f0c8a0', handLo = '#c89874';
+  const sw = (w === 0 ? 1 : w === 2 ? -1 : 0);
+  if (dir === 'down') { drawArm(g, 2, 10 + b + sw, 6, sleeve, hand, handLo); drawArm(g, 18, 10 + b - sw, 6, sleeve, hand, handLo); }
+  else if (dir === 'up') { drawArm(g, 2, 10 + b - sw, 6, sleeve, hand, handLo); drawArm(g, 18, 10 + b + sw, 6, sleeve, hand, handLo); }
+  else { drawArm(g, 10, 10 + b + sw, 6, sleeve, hand, handLo); }
+  HERO_CACHE[key] = enhanceSprite(c); return HERO_CACHE[key];
+}
+/* ---------- the draw: shadow, body, weapon (behind/in front), trail ---------- */
+function drawHeroFull(x, y, o) {
+  // o: {face:'down'|'up'|'left'|'right', walking, t, atkK, blocking, charging, weapon, flash, dodge}
+  const dirKey = (o.face === 'left' || o.face === 'right') ? 'side' : o.face;
+  const w = o.walking ? Math.floor(o.t * 9) % 4 : 1, b = o.walking ? (w % 2) : (Math.floor(o.t * 2) % 2 ? 0 : 0);
+  const cell = heroCell(dirKey, w, o.walking ? b : 0);
+  const sc = CH_SC, W2 = cell.width * sc, H2 = cell.height * sc;
+  const flip = o.face === 'left';
+  const pose = o.weapon ? weaponPose(o.face, o.atkK, o.weapon.cls, o.blocking, o.charging, o.t) : null;
+  const wspr = o.weapon ? weaponArt(o.weapon) : null;
+  const gripBase = HAND[dirKey];
+  const drawWeapon = () => {
+    if (!pose || !wspr) return;
+    const gx = (flip ? (CH_W - gripBase.x) : gripBase.x), gy = gripBase.y;
+    const px0 = x - W2 / 2 + (gx + 1) * sc + pose.dx * sc * .7, py0 = y - H2 + 4 + gy * sc + pose.dy * sc * .7;
+    ctx.save(); ctx.translate(px0, py0); ctx.rotate(pose.ang + Math.PI / 2); ctx.scale(sc * .78 * pose.sc, sc * .78 * pose.sc);
+    ctx.imageSmoothingEnabled = false;
+    const glow = weaponRarGlow(o.weapon);
+    if (glow && (o.weapon.up > 0 || o.weapon.rarity === 'legend' || o.weapon.rarity === 'mythic')) { ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = .28 + Math.sin(o.t * 4) * .1; ctx.shadowColor = glow; ctx.shadowBlur = 10; ctx.drawImage(wspr, -20, -34); ctx.restore(); }
+    ctx.drawImage(wspr, -20, -34); // grip at (20,34)
+    ctx.restore();
+    // hand over the hilt so the weapon is visibly gripped
+    const hx = px0 - 3 * sc * .7, hy = py0 - 2 * sc * .7;
+    ctx.fillStyle = '#c89874'; ctx.fillRect(hx, hy, 6 * sc * .7, 5 * sc * .7);
+    ctx.fillStyle = '#f0c8a0'; ctx.fillRect(hx, hy, 6 * sc * .7, 2 * sc * .7);
+  };
+  const front = !(o.face === 'up');
+  // shadow
+  ctx.fillStyle = 'rgba(0,0,0,.42)'; ctx.beginPath(); ctx.ellipse(x, y + 4, 12, 4.6, 0, 0, TAU); ctx.fill();
+  if (o.dodge) ctx.globalAlpha = .45;
+  if (!front) drawWeapon();
+  ctx.save(); ctx.translate(x, y - H2 + 4 + H2 / 2); if (flip) ctx.scale(-1, 1); ctx.drawImage(cell, -W2 / 2, -H2 / 2, W2, H2); ctx.restore();
+  if (o.flash > 0) { ctx.save(); ctx.globalAlpha = .55; ctx.globalCompositeOperation = 'lighter'; ctx.translate(x, y - H2 + 4 + H2 / 2); if (flip) ctx.scale(-1, 1); ctx.drawImage(cell, -W2 / 2, -H2 / 2, W2, H2); ctx.restore(); }
+  if (front) drawWeapon();
+  ctx.globalAlpha = 1;
+  return { pose };
+}
+
 /* ===== 50_render.js ===== */
 /* ================= RENDER ================= */
 let ctx = null, cv = null, DPR = 1;
@@ -2949,67 +3240,41 @@ function drawMob(m) {
   if (m.slow > 0) { ctx.globalAlpha = .28; px(x - 12, y - 22, 24, 26, '#a8e8ff'); ctx.globalAlpha = 1; }
   if (m.burn > 0 && Math.random() < .5) FX.push({ k: 'spark', x: x + rf(-8, 8), y: y - 8, l: .6, c: '#ff9a3a', n: 1 });
 }
+function playerFace() {
+  const ca = Math.cos(P.dir), sa = Math.sin(P.dir);
+  if (Math.abs(sa) > Math.abs(ca) * 1.15) return sa < 0 ? 'up' : 'down';
+  return ca < 0 ? 'left' : 'right';
+}
 function drawPlayer() {
   const t = performance.now() / 1000;
   const s = heroStats();
   const x = P.x, y = P.y;
-  ctx.fillStyle = 'rgba(0,0,0,.42)';
-  ctx.beginPath(); ctx.ellipse(x, y + 4, 11, 4.5, 0, 0, TAU); ctx.fill();
   const aura = (G.flags && G.flags.aura) ? G.flags.aura : null;
   if (aura) {
     ctx.save(); ctx.globalAlpha = .26; ctx.fillStyle = aura; ctx.beginPath(); ctx.ellipse(x, y + 3, 18, 7, 0, 0, TAU); ctx.fill();
     ctx.globalAlpha = .6; ctx.strokeStyle = aura; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.ellipse(x, y + 3, 15, 5.5, 0, 0, TAU); ctx.stroke(); ctx.restore();
   }
-  const fr = heroFrames();
-  const ca = Math.cos(P.dir), sa = Math.sin(P.dir);
-  const dirKey = Math.abs(sa) > Math.abs(ca) ? (sa < 0 ? 'up' : 'down') : 'side';
-  const flip = dirKey === 'side' && ca < 0;
-  const fi = P.state === 'walk' ? Math.floor(t * 9) % 4 : Math.floor(t * 2) % 2;
-  const spr = fr[dirKey][fi];
-  const sc = 2.2;
-  ctx.save(); ctx.translate(x, y + 3);
-  if (P.dodgeT > 0) ctx.globalAlpha = .45;
-  if (flip) ctx.scale(-1, 1);
-  const behind = dirKey === 'up';
-  if (!behind) ctx.drawImage(spr, -spr.width * sc / 2, -spr.height * sc + 4, spr.width * sc, spr.height * sc);
-  ctx.restore();
-  if (P.flash > 0) { ctx.save(); ctx.globalAlpha = .6; ctx.globalCompositeOperation = 'lighter'; ctx.translate(x, y + 3); if (flip) ctx.scale(-1, 1); ctx.drawImage(spr, -spr.width * sc / 2, -spr.height * sc + 4, spr.width * sc, spr.height * sc); ctx.restore(); }
-  // weapon
   const w = playerWeapon();
-  const cls = w ? w.cls : 'sword';
-  const reach = (w ? w.reach : 44);
-  let ang = P.dir, swing = 0, ext = 0;
-  if (P.atk) {
-    const a = P.atk; const k = clamp(a.t / (a.wind + a.active), 0, 1);
-    swing = (k - .5) * (a.heavy ? 2.4 : 1.8); ang = a.dir + swing;
-    ext = Math.sin(clamp(a.t / (a.wind + a.active * .6), 0, 1) * Math.PI) * (a.heavy ? 8 : 5);
-  } else if (P.block) { ang = P.dir + .5; }
-  const len = Math.min(48, reach * .66) + ext;
-  const wspr = w ? weaponSprite(w) : null;
-  ctx.save(); ctx.translate(x, y - 20); ctx.rotate(ang);
-  if (wspr) {
-    const wl = len * 1.15;
-    ctx.translate(8, 0); ctx.rotate(Math.PI / 4 + Math.PI / 2 * 0); ctx.rotate(-Math.PI / 2 + Math.PI / 2);
-    ctx.drawImage(wspr, 0, -wl * .5, wl, wl);
+  const face = playerFace();
+  let atkK = -1, a = P.atk;
+  if (a) atkK = clamp(a.t / (a.wind + a.active + a.rec), 0, .999);
+  const walking = P.state === 'walk' || (Math.abs(P.vx || 0) + Math.abs(P.vy || 0) > 5);
+  drawHeroFull(x, y, { face, walking, t, atkK, blocking: !!P.block, charging: false, weapon: w, flash: P.flash, dodge: P.dodgeT > 0 });
+  // slash arc trail
+  if (a && a.t > a.wind * .5 && a.t < a.wind + a.active) {
+    const reach = (w ? w.reach : 44);
+    ctx.save(); ctx.globalAlpha = .5; ctx.strokeStyle = a.heavy ? '#ffcf8a' : '#dfe8ff'; ctx.lineWidth = a.heavy ? 5 : 3; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.arc(x, y - 22, reach * .72, a.dir - a.arc, a.dir + a.arc); ctx.stroke();
+    ctx.globalAlpha = .22; ctx.lineWidth = a.heavy ? 11 : 7; ctx.stroke(); ctx.restore();
   }
-  ctx.restore();
   if (P.block) {
-    ctx.save(); ctx.translate(x + Math.cos(P.dir) * 14, y - 18 + Math.sin(P.dir) * 14); ctx.rotate(P.dir);
-    ctx.globalAlpha = .55 + (P.parryT > 0 ? .4 : 0); ctx.fillStyle = P.parryT > 0 ? '#fff0b0' : '#9ab8e8';
-    ctx.beginPath(); ctx.ellipse(0, 0, 4, 15, 0, 0, TAU); ctx.fill(); ctx.restore();
-  }
-  if (behind) { ctx.save(); ctx.translate(x, y + 3); ctx.drawImage(spr, -spr.width * sc / 2, -spr.height * sc + 4, spr.width * sc, spr.height * sc); ctx.restore(); }
-  if (P.atk) {
-    const a = P.atk;
-    if (a.t > a.wind * .5 && a.t < a.wind + a.active) {
-      ctx.save(); ctx.globalAlpha = .55; ctx.strokeStyle = a.heavy ? '#ffcf8a' : '#dfe8ff'; ctx.lineWidth = a.heavy ? 5 : 3; ctx.lineCap = 'round';
-      ctx.beginPath(); ctx.arc(x, y - 16, reach * .72, a.dir - a.arc, a.dir + a.arc); ctx.stroke();
-      ctx.globalAlpha = .25; ctx.lineWidth = a.heavy ? 10 : 6; ctx.stroke(); ctx.restore();
-    }
+    ctx.save(); ctx.translate(x + Math.cos(P.dir) * 18, y - 22 + Math.sin(P.dir) * 14); ctx.rotate(P.dir);
+    ctx.globalAlpha = .5 + (P.parryT > 0 ? .4 : 0); ctx.fillStyle = P.parryT > 0 ? '#fff0b0' : '#9ab8e8';
+    ctx.beginPath(); ctx.ellipse(0, 0, 4, 16, 0, 0, TAU); ctx.fill(); ctx.restore();
   }
   if (P.hp / s.maxhp < .25 && !P.dead) {
     ctx.save(); ctx.globalAlpha = .25 + Math.sin(t * 6) * .1; ctx.strokeStyle = '#b3352f'; ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.arc(x, y - 14, 24, 0, TAU); ctx.stroke(); ctx.restore();
+    ctx.beginPath(); ctx.arc(x, y - 18, 26, 0, TAU); ctx.stroke(); ctx.restore();
   }
   if (P.dead) { ctx.globalAlpha = .6; px(x - 12, y - 2, 24, 4, '#8a8a92'); ctx.globalAlpha = 1; }
 }
@@ -3272,7 +3537,7 @@ UI.show = function (name, data) {
   root.innerHTML = '';
   ({ regions: uiRegions, inv: uiInv, skills: uiSkillsScreen, board: uiBoard, quests: uiQuests, bestiary: uiBestiary, ach: uiAch, journal: uiJournal,
     shop: uiShop, forge: uiForge, alchemy: uiAlchemy, storage: uiStorage, settings: uiSettings, witch: uiWitch, deathSummary: uiDeath,
-    maphelp: uiHelp }[name] || uiHelp).call(UI, data || {});
+    maphelp: uiHelp, admin: uiAdmin }[name] || uiHelp).call(UI, data || {});
   paintIcons(root);
   bindCommon(root);
   updateHud();
@@ -3465,6 +3730,7 @@ function handleAct(act, ds) {
   else if (act === 'startq') { startQuest(ds.id); UI.show('board'); }
   else if (act === 'claimMain') { claimMain(ds.id); }
   else if (act === 'travel') { travelTo(+ds.reg); }
+  else if (act === 'openadmin') { UI.show('admin'); }
   else if (act === 'upgrade') { const it = findItem(uid) || gearByUid(uid); if (it) { upgradeItem(it); UI.show('forge', { tab: 'up' }); } }
   else if (act === 'enchant') { enchantItem(findItem(uid) || gearByUid(uid), ds.rune); UI.show('forge', { tab: 'ench' }); }
   else if (act === 'craft') { const rc = RECIPES.find(r => r.id === ds.id); if (rc) { doCraft(rc); UI.show('alchemy'); } }
@@ -3902,6 +4168,7 @@ function uiSettings() {
     '<button class="btn wide" data-act="importcode" style="margin-bottom:6px">Загрузить код</button>' +
     '<button class="btn wide gold" data-act="importLegacy" style="margin-bottom:6px">Перенести старое сохранение</button>' +
     '<div class="small muted" style="margin-bottom:8px">Перенос берёт уровень, золото, бестиарий и клинок из Popadanec v92 (popad_save3).</div>' +
+    (G.flags.admin ? '<button class="btn wide" data-act="openadmin" style="margin-bottom:6px;border-color:#6a4bb0;color:#c9a8ff">Админ-панель</button>' : '') +
     '<button class="btn wide danger" data-act="reset">Начать заново</button></div></div></div>');
   $$('#screens [data-toggle]').forEach(b => b.onclick = () => {
     const k = b.dataset.toggle; G.set[k] = !G.set[k];
@@ -3971,6 +4238,119 @@ function mascotTip() {
 function exportCode() { try { return btoa(unescape(encodeURIComponent(JSON.stringify(G)))); } catch (e) { return ''; } }
 function importCode(c) {
   try { const s = decodeURIComponent(escape(atob(c.trim()))); const o = JSON.parse(s); if (!o || !o.hero) return false; G = normalizeState(o); saveGame(true); return true; } catch (e) { return false; }
+}
+
+/* ===== 65_admin.js ===== */
+/* ================= ADMIN PANEL (secret code: pipiska228) ================= */
+const ADMIN_CODE = 'pipiska228';
+let ADM = { rar: 'legend', tab: 'main', q: '' };
+function admUnlock() {
+  if (!G || !G.hero) { toast('Сначала начни игру', '#ff9a8a'); return; }
+  G.flags.admin = 1; sfx('ach'); toast('Админ-панель открыта', '#c080ff'); saveGame(true);
+  UI.show('admin');
+}
+function askAdminCode() {
+  if (document.getElementById('admAsk')) return;
+  const d = document.createElement('div'); d.id = 'admAsk';
+  d.style.cssText = 'position:fixed;inset:0;background:rgba(7,4,12,.86);z-index:999;display:flex;align-items:center;justify-content:center';
+  d.innerHTML = '<div style="background:#1d1430;border:1px solid #6a4bb0;border-radius:12px;padding:18px;max-width:320px;width:90%;text-align:center;box-shadow:0 0 30px #6a4bb055">' +
+    '<div style="color:#ffd36b;font-weight:bold;margin-bottom:8px;font-size:15px;letter-spacing:.08em">СЕКРЕТНЫЙ КОД</div>' +
+    '<input id="admCode" type="password" autocomplete="off" placeholder="Код доступа" style="width:100%;box-sizing:border-box;background:#120c1c;border:1px solid #4b3a75;border-radius:8px;color:#ece6f7;padding:10px;font-size:16px;outline:none;margin-bottom:10px;font-family:inherit">' +
+    '<div style="display:flex;gap:8px"><button id="admOk" style="flex:1;padding:10px;border:0;border-radius:8px;background:#6a4bb0;color:#fff;font-weight:bold;font-family:inherit">OK</button><button id="admNo" style="flex:1;padding:10px;border:0;border-radius:8px;background:#3a2c58;color:#ccc;font-family:inherit">Отмена</button></div></div>';
+  document.body.appendChild(d);
+  const inp = d.querySelector('#admCode'); setTimeout(() => { try { inp.focus(); } catch (e) { } }, 50);
+  const close = () => { try { document.body.removeChild(d); } catch (e) { } };
+  const check = () => {
+    const v = (inp.value || '').trim().toLowerCase();
+    if (v === ADMIN_CODE) { close(); admUnlock(); }
+    else { toast('Неверный код', '#ff9a8a'); sfx('error'); inp.value = ''; }
+  };
+  d.querySelector('#admOk').onclick = check; d.querySelector('#admNo').onclick = close;
+  inp.onkeydown = ev => { ev.stopPropagation(); if (ev.key === 'Enter') check(); if (ev.key === 'Escape') close(); };
+}
+function initAdminTriggers() {
+  let buf = '';
+  addEventListener('keydown', e => {
+    if (e.target && /INPUT|TEXTAREA/.test(e.target.tagName)) return;
+    buf = (buf + ((e.key || '').toLowerCase())).slice(-ADMIN_CODE.length);
+    if (buf === ADMIN_CODE) { buf = ''; if (G && G.hero) admUnlock(); else askAdminCode(); }
+  });
+  let taps = 0, tapT = 0;
+  const h = document.querySelector('.hero-title');
+  if (h) h.addEventListener('pointerdown', () => { const n = Date.now(); if (n - tapT > 2500) taps = 0; tapT = n; if (++taps >= 7) { taps = 0; askAdminCode(); } });
+  const f = document.querySelector('.footnote');
+  if (f) f.addEventListener('pointerdown', () => { const n = Date.now(); if (n - tapT > 2500) taps = 0; tapT = n; if (++taps >= 7) { taps = 0; askAdminCode(); } });
+}
+function admGive(it) {
+  if (!it) return false;
+  if (G.inv.length >= 60 && it.kind !== 'mat' && it.kind !== 'consumable') { toast('Рюкзак полон (60)', '#ff9a8a'); sfx('error'); return false; }
+  addItem(it); sfx('buy'); toast('Выдано: ' + it.name, RARITY[it.rarity] ? RARITY[it.rarity].c : '#fff'); return true;
+}
+function admMaxSkills() { Object.keys(SKILLS).forEach(k => { G.hero.skills[k] = SKILLS[k].max || 5; }); G.hero.points = 0; dirtyStats(); }
+const ADM_ACTIONS = () => [
+  { n: '+1 000 золота', d: 'Казна короля', c: '#ffd24a', f: () => { G.gold += 1000; } },
+  { n: '+100 000 золота', d: 'Казна императора', c: '#ffd24a', f: () => { G.gold += 100000; } },
+  { n: '+5 уровней', d: 'Опыт прыгает вверх, +очки навыков', c: '#6ab0ff', f: () => { for (let i = 0; i < 5; i++) { G.hero.lvl++; G.hero.points += 2; if (G.hero.lvl % 5 === 0) G.hero.points++; } dirtyStats(); const s = heroStats(); P.hp = s.maxhp; } },
+  { n: '+10 очков навыков', d: 'Мгновенный мастер', c: '#9affc8', f: () => { G.hero.points += 10; } },
+  { n: 'Макс. все навыки', d: 'Каждый навык на пределе', c: '#9affc8', f: admMaxSkills },
+  { n: 'Полное HP/стамина/мана', d: 'Мгновенное восстановление', c: '#ff7a7a', f: () => { const s = heroStats(); P.hp = s.maxhp; P.stam = s.maxstam; P.mana = s.maxmana; } },
+  { n: 'GOD MODE ' + (G.flags.god ? '(вкл)' : '(выкл)'), d: 'Полная неуязвимость', c: '#7affc8', f: () => { G.flags.god = !G.flags.god; toast(G.flags.god ? 'Бессмертие включено' : 'Бессмертие выключено', '#7affc8'); } },
+  { n: 'ONE-HIT ' + (G.flags.onehit ? '(вкл)' : '(выкл)'), d: 'Любой враг умирает с удара', c: '#ff5a5a', f: () => { G.flags.onehit = !G.flags.onehit; toast(G.flags.onehit ? 'Один удар включён' : 'Один удар выключен', '#ff5a5a'); } },
+  { n: 'Все материалы ×20', d: 'Весь крафт-материал мира', c: '#c8a878', f: () => { REGIONS.forEach(r => r.mats.forEach(m => addMat(m, 20))); } },
+  { n: 'Все зелья ×5', d: 'Полная сумка зелий', c: '#ff8a8a', f: () => { Object.keys(CONS).forEach(k => { const it = mkItem(k); if (it) { it.qty = 5; addItem(it); } }); } },
+  { n: 'Убить всех в зоне', d: 'Зачистка одним нажатием', c: '#ff5a5a', f: () => { let n = 0; MOBS.forEach(m => { if (!m.dead && !m.boss) { m.hp = 0; killMob(m); n++; } }); toast('Убито: ' + n, '#ff5a5a'); } },
+  { n: 'Снять печать', d: 'Открыть врата босса сразу', c: '#e8c073', f: () => { if (W && W.lairGate) { W.lairGate.open = true; G.flags.zoneKills = 8; toast('Печать снята', '#e8c073'); } else toast('Только в зоне региона', '#ff9a8a'); } },
+  { n: 'Убить босса', d: 'Мгновенно (только в логове)', c: '#ff5a5a', f: () => { const bs = MOBS.filter(m => m.boss && !m.dead); if (!bs.length) { toast('Босса нет', '#ff9a8a'); return; } bs.forEach(m => { m.hp = 0; killMob(m); }); } },
+  { n: 'Открыть все регионы', d: 'Все 12 земель доступны', c: '#6ab0ff', f: () => { G.unlocked = REGIONS.map((r, i) => i); toast('Открыто 12 регионов', '#6ab0ff'); } },
+  { n: 'Пройти все регионы', d: 'Печати сняты, награды не выдаются', c: '#6ab0ff', f: () => { G.unlocked = REGIONS.map((r, i) => i); REGIONS.forEach(r => G.cleared[r.id] = 1); } },
+  { n: 'Открыть бестиарий', d: 'Все существа изучены', c: '#c070ff', f: () => { Object.keys(ENEMIES).forEach(k => { G.bestiary[k] = Math.max(G.bestiary[k] || 0, 25); }); toast('Бестиарий полный', '#c070ff'); } },
+  { n: 'Открыть достижения', d: 'Вся коллекция наград', c: '#ffd24a', f: () => { let n = 0; ACHS.forEach(a => { if (!G.ach[a.id]) { G.ach[a.id] = 1; n++; } }); toast('Достижений: ' + n, '#ffd24a'); } },
+  { n: 'Весь комплект региона…', d: 'См. вкладку «Броня»', c: '#8ac0e0', f: () => { ADM.tab = 'armor'; } }
+];
+function admTabs() {
+  const T = [['main', 'Действия'], ['weapons', 'Оружие'], ['armor', 'Броня'], ['acc', 'Аксессуары'], ['tp', 'Телепорт']];
+  return '<div class="tabs">' + T.map(t => '<button class="tab ' + (ADM.tab === t[0] ? 'on' : '') + '" data-admtab="' + t[0] + '">' + t[1] + '</button>').join('') + '</div>';
+}
+function admRarBar() {
+  return '<div class="admrar">' + Object.keys(RARITY).map(r => '<button class="btn sm ' + (ADM.rar === r ? 'gold' : '') + '" data-admrar="' + r + '" style="' + (ADM.rar === r ? '' : 'color:' + RARITY[r].c) + '">' + RARITY[r].n + '</button>').join('') + '</div>';
+}
+function uiAdmin() {
+  let body = '';
+  if (ADM.tab === 'main') {
+    const acts = ADM_ACTIONS();
+    body = '<div class="admgrid">' + acts.map((a, i) => '<div class="card admcard" style="border-color:' + a.c + '"><div class="nm" style="color:' + a.c + '">' + a.n + '</div><div class="small muted">' + a.d + '</div><button class="btn sm gold" data-admact="' + i + '">OK</button></div>').join('') + '</div>';
+  } else if (ADM.tab === 'weapons') {
+    const keys = Object.keys(WB).concat(Object.keys(LEGEND));
+    body = admRarBar() + '<div class="admlist">' + keys.map(k => { const b = WB[k] || LEGEND[k]; const it = mkWeapon(k, { rarity: ADM.rar }); return '<button class="admitem" data-admw="' + k + '" title="' + b.n + '"><span class="ic" data-wicon="' + k + '"></span><span class="nm" style="color:' + RARITY[ADM.rar].c + '">' + b.n + '</span><span class="small muted">' + CLS[b.cls].name + ' · ' + Math.round(it.dmg) + ' урона</span></button>'; }).join('') + '</div>';
+  } else if (ADM.tab === 'armor') {
+    body = admRarBar() + '<div class="admlist">' + REGIONS.map(r => '<div class="admset"><div class="nm" style="color:' + r.glow + '">' + ARMOR[r.id].set + '</div><div class="admbtns">' +
+      ['head', 'chest', 'legs'].map(s => '<button class="btn sm" data-admarm="' + r.id + ':' + s + '">' + ARMOR_SLOTNAME[s] + '</button>').join('') +
+      '<button class="btn sm gold" data-admarm="' + r.id + ':all">Весь комплект</button><button class="btn sm" data-admarm="' + r.id + ':wear">Надеть</button></div></div>').join('') + '</div>';
+  } else if (ADM.tab === 'acc') {
+    body = admRarBar() + '<div class="admlist">' + Object.keys(ACCS).map(k => '<button class="admitem" data-admacc="' + k + '"><span class="nm" style="color:' + RARITY[ADM.rar].c + '">' + ACCS[k].n + '</span><span class="small muted">Тир ' + ACCS[k].tier + '</span></button>').join('') + '</div>';
+  } else if (ADM.tab === 'tp') {
+    body = '<div class="admgrid"><div class="card admcard"><div class="nm">Город</div><div class="small muted">Вернуться домой</div><button class="btn sm gold" data-admtp="town">Идти</button></div>' +
+      REGIONS.map((r, i) => '<div class="card admcard" style="border-color:' + r.glow + '"><div class="nm" style="color:' + r.glow + '">' + r.name + '</div><div class="small muted">Зона</div><div class="admbtns"><button class="btn sm gold" data-admtp="z:' + r.id + '">Зона</button><button class="btn sm" data-admtp="l:' + r.id + '">Босс</button></div></div>').join('') + '</div>';
+  }
+  sheet('Админ-панель', 'Секретный режим. Только для тебя.', admTabs() + '<div class="scroll admbody">' + body + '</div>');
+  const root = $('#screens');
+  $$('[data-admtab]', root).forEach(b => b.onclick = () => { ADM.tab = b.dataset.admtab; sfx('click'); uiAdmin(); });
+  $$('[data-admrar]', root).forEach(b => b.onclick = () => { ADM.rar = b.dataset.admrar; sfx('click'); uiAdmin(); });
+  $$('[data-admact]', root).forEach(b => b.onclick = () => { const a = ADM_ACTIONS()[+b.dataset.admact]; a.f(); sfx('buy'); dirtyStats(); saveGame(true); uiAdmin(); });
+  $$('[data-admw]', root).forEach(b => b.onclick = () => { admGive(mkWeapon(b.dataset.admw, { rarity: ADM.rar, up: ADM.rar === 'epic' || ADM.rar === 'legend' || ADM.rar === 'mythic' ? 5 : 0 })); saveGame(true); });
+  $$('[data-admacc]', root).forEach(b => b.onclick = () => { admGive(mkAcc(b.dataset.admacc, { rarity: ADM.rar })); saveGame(true); });
+  $$('[data-admarm]', root).forEach(b => b.onclick = () => {
+    const [rid, what] = b.dataset.admarm.split(':');
+    if (what === 'wear') { ['head', 'chest', 'legs'].forEach(s => { const it = mkArmor(rid, s, { rarity: ADM.rar }); G.gear[s] = it; }); dirtyStats(); sfx('buy'); toast('Комплект надет: ' + ARMOR[rid].set, '#8ff0a0'); saveGame(true); return; }
+    if (what === 'all') ['head', 'chest', 'legs'].forEach(s => admGive(mkArmor(rid, s, { rarity: ADM.rar }))); else admGive(mkArmor(rid, what, { rarity: ADM.rar }));
+    saveGame(true);
+  });
+  $$('[data-admtp]', root).forEach(b => b.onclick = () => {
+    const v = b.dataset.admtp; UI.close();
+    if (v === 'town') enterWorld(genTown(), { mode: 'town' });
+    else { const [k, id] = v.split(':'); G.region = REG[id].i; if (k === 'z') enterWorld(genZone(id), { mode: 'zone' }); else enterWorld(genLair(id), { mode: 'lair' }); }
+  });
+  $$('[data-wicon]', root).forEach(el => { const it = mkWeapon(el.dataset.wicon, { rarity: ADM.rar }); if (it) el.appendChild(iconCanvas(it, 40)); });
 }
 
 /* ===== 70_main.js ===== */
@@ -4243,6 +4623,7 @@ function boot() {
   initRender();
   initSprites();
   bindInput();
+  initAdminTriggers();
   $('#newBtn').onclick = () => startGame('new');
   $('#contBtn').onclick = () => startGame('continue');
   $('#legacyBtn').onclick = () => { const r = importLegacy(); if (r) { toast('Перенесено: ур. ' + r.summary.lvl + ', ' + r.summary.gold + ' золота', '#8ff0a0'); startGame('continue'); } else toast('Старое сохранение не найдено', '#ff9a8a'); };
